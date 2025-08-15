@@ -1,0 +1,204 @@
+services:
+  # --- Datastores ---
+  - type: keyvalue
+    name: n8n-queue
+    plan: starter
+
+  - type: postgres
+    name: n8n-db
+    plan: basic-256mb
+
+  # --- n8n MAIN (UI/API + timers) ---
+  - type: web
+    name: n8n-main
+    runtime: node
+    plan: standard
+    repo: https://github.com/<you>/<your-n8n-fork>.git
+    branch: main
+
+    # Make sure we match your engines (Node >= 22.16)
+    envVars:
+      - key: NODE_VERSION
+        value: 22.16.0
+
+      # Required n8n platform vars
+      - key: PORT
+        value: "5678"
+      - key: N8N_PORT
+        value: "5678"
+      - key: N8N_PROTOCOL
+        value: "https"
+      - key: WEBHOOK_URL         # ← replace after first deploy or when custom domain is set
+        value: https://n8n-main-xxxx.onrender.com
+      - key: N8N_HOST            # host only, no protocol
+        value: n8n-main-xxxx.onrender.com
+
+      # Queue mode + encryption
+      - key: EXECUTIONS_MODE
+        value: queue
+      - key: N8N_ENCRYPTION_KEY  # generate once; workers/webhooks reuse it
+        generateValue: true
+
+      # Postgres (wired from DB)
+      - key: DB_TYPE
+        value: postgresdb
+      - key: DB_POSTGRESDB_HOST
+        fromDatabase: { name: n8n-db, property: host }
+      - key: DB_POSTGRESDB_PORT
+        fromDatabase: { name: n8n-db, property: port }
+      - key: DB_POSTGRESDB_DATABASE
+        fromDatabase: { name: n8n-db, property: database }
+      - key: DB_POSTGRESDB_USER
+        fromDatabase: { name: n8n-db, property: user }
+      - key: DB_POSTGRESDB_PASSWORD
+        fromDatabase: { name: n8n-db, property: password }
+      - key: DB_POSTGRESDB_SSL_CA
+        fromDatabase: { name: n8n-db, property: caCertificate }
+
+      # Queue (Valkey/Redis on Render)
+      - key: QUEUE_BULL_REDIS_HOST
+        fromService: { name: n8n-queue, type: keyvalue, property: host }
+      - key: QUEUE_BULL_REDIS_PORT
+        fromService: { name: n8n-queue, type: keyvalue, property: port }
+      - key: QUEUE_BULL_REDIS_PASSWORD
+        fromService: { name: n8n-queue, type: keyvalue, property: password }
+
+      # Binary data must be S3 in queue mode
+      - key: N8N_BINARY_DATA_MODE
+        value: s3
+      - key: N8N_S3_BUCKET
+        value: your-bucket
+      - key: N8N_S3_REGION
+        value: your-region
+      - key: N8N_S3_ACCESS_KEY
+        value: your-access-key
+      - key: N8N_S3_SECRET_KEY
+        value: your-secret-key
+      - key: N8N_S3_ENDPOINT
+        value: https://your-s3-endpoint
+      - key: N8N_S3_FORCE_PATH_STYLE
+        value: "true"
+
+      # Nice-to-haves
+      - key: EXECUTIONS_DATA_SAVE_ON_SUCCESS
+        value: none
+      - key: EXECUTIONS_DATA_SAVE_ON_ERROR
+        value: all
+      - key: N8N_DEFAULT_BINARY_DATA_MODE
+        value: reference
+      - key: N8N_LOG_LEVEL
+        value: info
+
+    # Use corepack to install the exact pnpm your repo requests
+    buildCommand: |
+      corepack enable
+      corepack prepare pnpm@10.12.1 --activate
+      pnpm install --frozen-lockfile
+      pnpm run build     # runs `turbo run build`
+
+    startCommand: pnpm start
+    healthCheckPath: /healthz
+    autoDeploy: true
+
+  # --- n8n WORKER(S) ---
+  - type: worker
+    name: n8n-worker
+    runtime: node
+    plan: standard
+    repo: https://github.com/<you>/<your-n8n-fork>.git
+    branch: main
+    envVars:
+      - key: NODE_VERSION
+        value: 22.16.0
+      - key: N8N_ENCRYPTION_KEY
+        fromService: { name: n8n-main, type: web, property: env.N8N_ENCRYPTION_KEY }
+      - key: EXECUTIONS_MODE
+        value: queue
+
+      # DB (same wiring)
+      - key: DB_TYPE
+        value: postgresdb
+      - key: DB_POSTGRESDB_HOST
+        fromDatabase: { name: n8n-db, property: host }
+      - key: DB_POSTGRESDB_PORT
+        fromDatabase: { name: n8n-db, property: port }
+      - key: DB_POSTGRESDB_DATABASE
+        fromDatabase: { name: n8n-db, property: database }
+      - key: DB_POSTGRESDB_USER
+        fromDatabase: { name: n8n-db, property: user }
+      - key: DB_POSTGRESDB_PASSWORD
+        fromDatabase: { name: n8n-db, property: password }
+      - key: DB_POSTGRESDB_SSL_CA
+        fromDatabase: { name: n8n-db, property: caCertificate }
+
+      # Queue
+      - key: QUEUE_BULL_REDIS_HOST
+        fromService: { name: n8n-queue, type: keyvalue, property: host }
+      - key: QUEUE_BULL_REDIS_PORT
+        fromService: { name: n8n-queue, type: keyvalue, property: port }
+      - key: QUEUE_BULL_REDIS_PASSWORD
+        fromService: { name: n8n-queue, type: keyvalue, property: password }
+
+      # S3
+      - key: N8N_BINARY_DATA_MODE
+        value: s3
+      - key: N8N_S3_BUCKET
+        value: your-bucket
+      - key: N8N_S3_REGION
+        value: your-region
+      - key: N8N_S3_ACCESS_KEY
+        value: your-access-key
+      - key: N8N_S3_SECRET_KEY
+        value: your-secret-key
+      - key: N8N_S3_ENDPOINT
+        value: https://your-s3-endpoint
+      - key: N8N_S3_FORCE_PATH_STYLE
+        value: "true"
+
+      - key: QUEUE_HEALTH_CHECK_ACTIVE
+        value: "true"
+
+    buildCommand: |
+      corepack enable
+      corepack prepare pnpm@10.12.1 --activate
+      pnpm install --frozen-lockfile
+      pnpm run build
+    startCommand: pnpm worker -- --concurrency=10
+    scale:
+      minInstances: 1
+      maxInstances: 10
+    autoDeploy: true
+
+  # --- (Optional) WEBHOOK PROCESSORS ---
+  - type: web
+    name: n8n-webhook
+    runtime: node
+    plan: standard
+    repo: https://github.com/<you>/<your-n8n-fork>.git
+    branch: main
+    envVars:
+      - key: NODE_VERSION
+        value: 22.16.0
+      - key: PORT
+        value: "5678"
+      - key: EXECUTIONS_MODE
+        value: queue
+      - key: WEBHOOK_URL
+        value: https://hooks-yourdomain.com
+      - key: N8N_DISABLE_PRODUCTION_MAIN_PROCESS
+        value: "true"
+      - key: N8N_ENCRYPTION_KEY
+        fromService: { name: n8n-main, type: web, property: env.N8N_ENCRYPTION_KEY }
+      # copy DB/QUEUE/S3 envs as above ...
+
+    buildCommand: |
+      corepack enable
+      corepack prepare pnpm@10.12.1 --activate
+      pnpm install --frozen-lockfile
+      pnpm run build
+    startCommand: pnpm webhook
+    healthCheckPath: /healthz
+    scale:
+      minInstances: 0
+      maxInstances: 10
+    autoDeploy: true
