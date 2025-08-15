@@ -10,11 +10,11 @@ services:
 
   # --- n8n MAIN (UI/API + timers) ---
   - type: web
-    name: n8n-main
+    name: n8n-master
     runtime: node
     plan: standard
-    repo: https://github.com/<you>/<your-n8n-fork>.git
-    branch: main
+    repo: https://github.com/danconversionly/n8n.git
+    branch: master
 
     # Make sure we match your engines (Node >= 22.16)
     envVars:
